@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reggaeton Spot</title>
+<style>
+:root{--bg:#14101f;--card:#211a36;--fg:#f4efff;--mut:#9a90b8;--acc:#ff4fa3;--ok:#3ddc97;--ko:#ff5c5c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;display:flex;justify-content:center;padding:20px}
+main{width:100%;max-width:480px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--mut);font-size:.9rem;margin-bottom:16px}
+.stats{display:flex;gap:16px;color:var(--mut);font-size:.9rem;margin-bottom:16px}
+.stats b{color:var(--fg)}
+.steps{display:flex;gap:6px;margin-bottom:16px}
+.step{flex:1;height:34px;border-radius:8px;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:.75rem;color:var(--mut)}
+.step.on{background:var(--acc);color:#fff;font-weight:700}
+.step.used{background:#3a2f5c;color:var(--fg)}
+button{font:inherit;border:0;border-radius:12px;padding:12px 16px;cursor:pointer;background:var(--card);color:var(--fg)}
+button.p{background:var(--acc);color:#fff;font-weight:700}
+button:disabled{opacity:.4;cursor:default}
+.row{display:flex;gap:8px;margin-bottom:12px}
+.row button{flex:1}
+input{width:100%;font:inherit;padding:12px;border-radius:12px;border:2px solid var(--card);background:var(--card);color:var(--fg);outline:none}
+input:focus{border-color:var(--acc)}
+.sug{background:var(--card);border-radius:12px;margin-top:6px;max-height:220px;overflow:auto}
+.sug div{padding:10px 12px;cursor:pointer;font-size:.9rem}
+.sug div:hover{background:#2e2550}
+.sug small{color:var(--mut)}
+.msg{margin:14px 0;min-height:24px}
+.ok{color:var(--ok)}.ko{color:var(--ko)}
+.reveal{display:flex;gap:12px;align-items:center;background:var(--card);padding:12px;border-radius:12px;margin-top:10px}
+.reveal img{width:64px;height:64px;border-radius:8px}
+.hist{color:var(--mut);font-size:.85rem;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>🔥 Reggaeton Spot</h1>
+  <div class="sub">Devine le morceau avec un extrait de plus en plus long.</div>
+  <div class="stats">Score <b id="score">0</b> · Série <b id="streak">0</b> · Record <b id="best">0</b></div>
+  <div class="steps" id="steps"></div>
+  <div class="row">
+    <button class="p" id="play">▶ Écouter</button>
+    <button id="skip">Passer (+)</button>
+  </div>
+  <input id="guess" placeholder="Titre ou artiste…" autocomplete="off" disabled>
+  <div class="sug" id="sug" hidden></div>
+  <div class="msg" id="msg">Chargement des morceaux…</div>
+  <div id="end"></div>
+  <div class="hist" id="hist"></div>
+  <button class="p" id="next" hidden style="width:100%;margin-top:12px">Morceau suivant →</button>
+  <audio id="audio" preload="auto"></audio>
+</main>
+<script>
+const ARTISTS=["Bad Bunny","J Balvin","Daddy Yankee","Karol G","Ozuna","Anuel AA","Maluma","Feid","Rauw Alejandro","Myke Towers","Nicky Jam","Wisin & Yandel","Don Omar","Becky G","Farruko","Sech","Jhay Cortez","Mora","Tego Calderon","Arcangel","Lunay","Natti Natasha","Plan B","Zion & Lennox","Tito El Bambino","Eladio Carrion","Quevedo","Peso Pluma"];
+const STEPS=[0.1,0.5,2,5,10,20];
+const $=id=>document.getElementById(id);
+const audio=$('audio');
+let pool=[],cur=null,step=0,over=true,timer=null,score=0,streak=0,best=+localStorage.getItem('rgBest')||0,played=new Set();
+
+function jsonp(url){return new Promise((res,rej)=>{
+  const cb='cb'+Math.random().toString(36).slice(2);
+  const s=document.createElement('script');
+  const t=setTimeout(()=>{s.remove();rej()},10000);
+  window[cb]=d=>{clearTimeout(t);delete window[cb];s.remove();res(d)};
+  s.onerror=()=>{clearTimeout(t);rej()};
+  s.src=url+'&output=jsonp&callback='+cb;
+  document.body.appendChild(s);
+})}
+const norm=s=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\(.*?\)|\[.*?\]|- .*$/g,'').replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+
+async function load(){
+  const seen=new Set();
+  const add=(id,title,artist,preview,cover)=>{
+    if(!preview)return;
+    const key=norm(title)+'|'+norm(artist);
+    if(seen.has(key))return;
+    seen.add(key);
+    pool.push({id,title,artist,key:norm(title),preview,cover});
+  };
+  const match=(a,name)=>norm(name||'').includes(norm(a).split(' ')[0]);
+  const jobs=[];let okI=0,okD=0,totD=0,prevD=0,errD='';
+  ARTISTS.forEach((a,i)=>{
+    jobs.push(jsonp(`https://itunes.apple.com/search?term=${encodeURIComponent(a)}&media=music&entity=song&limit=40`)
+      .then(d=>{okI++;(d.results||[]).forEach(t=>{if(match(a,t.artistName))add('i'+t.trackId,t.trackName,t.artistName,t.previewUrl,t.artworkUrl100)})}));
+    jobs.push(jsonp(`https://api.deezer.com/search?q=artist:"${encodeURIComponent(a)}"&limit=40`)
+      .then(d=>{okD++;if(d.error&&!errD)errD=d.error.message||'erreur';(d.data||[]).forEach(t=>{totD++;if(t.preview)prevD++;if(match(a,t.artist.name))add('d'+t.id,t.title,t.artist.name,t.preview,t.album&&t.album.cover_medium)})}));
+  });
+  await Promise.allSettled(jobs);
+  const diag=` (iTunes ${okI}/${ARTISTS.length}, Deezer ${okD}/${ARTISTS.length}, ${pool.length} morceaux; Deezer a renvoyé ${totD} titres dont ${prevD} avec extrait${errD?', erreur : '+errD:''})`;
+  if(pool.length<20){$('msg').innerHTML="Impossible de charger les morceaux. Vérifie ta connexion ou désactive ton bloqueur de pub/contenu."+diag;return}
+  $('msg').textContent=pool.length+' morceaux chargés.';
+  newRound();
+}
+
+function drawSteps(){
+  $('steps').innerHTML=STEPS.map((s,i)=>`<div class="step ${i===step&&!over?'on':i<step?'used':''}">${s}s</div>`).join('');
+}
+function newRound(){
+  if(played.size>=pool.length)played.clear();
+  let t;do{t=pool[Math.floor(Math.random()*pool.length)]}while(played.has(t.id));
+  played.add(t.id);cur=t;step=0;over=false;
+  audio.src=t.preview;audio.load();
+  $('end').innerHTML='';$('hist').textContent='';$('msg').textContent='';$('next').hidden=true;
+  $('guess').value='';$('guess').disabled=false;$('skip').disabled=false;$('play').disabled=false;
+  drawSteps();updateStats();
+}
+function updateStats(){$('score').textContent=score;$('streak').textContent=streak;$('best').textContent=best}
+function playClip(){
+  clearTimeout(timer);audio.pause();audio.currentTime=0;
+  audio.play().catch(()=>{});
+  timer=setTimeout(()=>audio.pause(),STEPS[step]*1000);
+}
+function finish(win){
+  over=true;clearTimeout(timer);audio.pause();
+  if(win){const pts=STEPS.length-step;score+=pts;streak++;if(streak>best){best=streak;localStorage.setItem('rgBest',best)}
+    $('msg').innerHTML=`<span class="ok">Bravo ! +${pts} pt${pts>1?'s':''}</span>`}
+  else{streak=0;$('msg').innerHTML='<span class="ko">Raté…</span>'}
+  $('end').innerHTML=`<div class="reveal"><img src="${cur.cover||''}" alt=""><div><b>${cur.title}</b><br>${cur.artist}</div></div>`;
+  $('guess').disabled=true;$('skip').disabled=true;$('sug').hidden=true;
+  $('next').hidden=false;drawSteps();updateStats();
+  audio.currentTime=0;audio.play().catch(()=>{});
+  timer=setTimeout(()=>audio.pause(),30000);
+}
+function wrong(txt){
+  $('hist').textContent=(txt?'❌ '+txt:'⏭ Passé');
+  if(step>=STEPS.length-1){finish(false);return}
+  step++;drawSteps();playClip();
+}
+function submit(t){
+  if(over)return;
+  const ok=t.id===cur.id||(t.key===cur.key&&norm(t.artist)===norm(cur.artist));
+  $('guess').value='';$('sug').hidden=true;
+  ok?finish(true):wrong(t.title+' – '+t.artist);
+}
+$('guess').addEventListener('input',e=>{
+  const q=norm(e.target.value);
+  if(q.length<2){$('sug').hidden=true;return}
+  const m=pool.filter(t=>(norm(t.title)+' '+norm(t.artist)).includes(q)).slice(0,8);
+  $('sug').innerHTML='';
+  m.forEach(t=>{const d=document.createElement('div');d.innerHTML=`${t.title} <small>– ${t.artist}</small>`;d.onclick=()=>submit(t);$('sug').appendChild(d)});
+  $('sug').hidden=!m.length;
+});
+$('play').onclick=()=>{if(!over)playClip()};
+$('skip').onclick=()=>wrong('');
+$('next').onclick=()=>{newRound();playClip()};
+drawSteps();updateStats();
+$('play').disabled=true;$('skip').disabled=true;
+load();
+</script>
+</body>
+</html>
